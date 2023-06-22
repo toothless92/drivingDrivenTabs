@@ -29,6 +29,9 @@ chrome.runtime.onInstalled.addListener(() => {
       chrome.storage.local.set({ 'drivenTabId': 0 })
       chrome.storage.local.set({ 'previousDrivingTabId': 0 })
       chrome.storage.local.set({ 'previousDrivenTabId': 0 })
+      chrome.storage.local.set({ 'currentTabId': 0 })
+      chrome.storage.local.set({ 'previousTabId': 0 })
+      chrome.storage.local.set({ 'lastTabCreatedTime': 0 })
   });
 
   async function getTabIds(){
@@ -156,13 +159,35 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
 });
 
 chrome.tabs.onActivated.addListener(function(activeInfo) {
-    previousTabId = currentTabId;
-    currentTabId = activeInfo.tabId;
+    let currentTabId
+    chrome.storage.local.get(['currentTabId'])
+    .then(result => {
+        currentTabId = result.currentTabId
+        chrome.storage.local.set({ 'previousTabId': currentTabId })
+        chrome.storage.local.set({ 'currentTabId': activeInfo.tabId })
+    })
   });
 
 chrome.tabs.onCreated.addListener(async function(tab) {
+    let endFunc = false
+    let timeResult = await chrome.storage.local.get(['lastTabCreatedTime'])
+    if (Date.now() - timeResult.lastTabCreatedTime < 250) return
+    let previousTabId
+    chrome.storage.local.get(['previousTabId'])
+    .then(result => previousTabId = result.previousTabId)
     let activeTabs = await chrome.tabs.query({active: true, currentWindow: true});
     let result = await getTabIds();
+    drivenTabId = parseInt(result.drivenTabId)
+    let drivenWindowId
+    let drivenTab
+    chrome.tabs.get(drivenTabId)
+    .then(tab2 => chrome.windows.get(tab2.windowId))
+    .then(window => drivenWindowId = window.id);
+
+    console.log(`DRIVEN TAB ID: ${drivenTabId}`)
+    console.log(`DRIVEN TAB: ${JSON.stringify(drivenTab)}`)
+    console.log(`drivenWindowId = ${drivenWindowId}, new tab windowId = ${tab.windowId}`)
+    if (tab.windowId === drivenWindowId) {condole.log('exiting tabs.onCreated callback'); return};
     console.log(`new tab ${tab.id} created, current active tab is ${activeTabs[0].id}`)
     console.log(`active tab array: ${JSON.stringify(activeTabs)}`)
     console.log(`previous active tab id was ${previousTabId}`)
@@ -176,22 +201,42 @@ chrome.tabs.onCreated.addListener(async function(tab) {
         let response = await chrome.tabs.sendMessage(result.drivingTabId, {type: "get-last-click-info"});
         if (response && Date.now() - response.time < 500) {  // Adjust the threshold as needed
             console.log('Middle click detected from driving tab within time threshold')
-            // If a real link was clicked, send URL directly to driven page
-            if (response.href) {
-                console.log(`Normal link. URL: ${tab.url}`)
-                await chrome.tabs.update(result.drivenTabId, {url: response.href, active: true});
-                await chrome.tabs.remove(tab.id);
-                console.log(`Removing tab ${tab.id}`)
-            } 
-            // If a simulated link was clicked (new tab was opened after clicking non-link element), delay to get URL
+            
+            let newTabId
+            if (response.newTab){
+                await chrome.storage.local.set({ 'lastTabCreatedTime': Date.now() })
+                if (response.href) {
+                    console.log(`Normal link. URL: ${tab.url}`)
+                    chrome.tabs.create({ windowId: drivenWindowId, url: response.href, active: true })
+                    await chrome.tabs.remove(tab.id);
+                    console.log(`Removing tab ${tab.id}`)    
+                }
+                else {
+                    setTimeout(async function(){
+                        let tempTab = await chrome.tabs.get(tab.id);
+                        console.log(`Simulated link. URL: ${tempTab.url.url}`)
+                        chrome.tabs.create({ windowId: drivenWindowId, url: tempTab.url, active: true })
+                        await chrome.tabs.remove(tempTab.id);
+                        console.log(`Removing tab ${tempTab.id}`)
+                        }, 500); // Adjust delay time as needed
+                }
+            }
             else {
-                setTimeout(async function(){
-                let newTab = await chrome.tabs.get(tab.id);
-                console.log(`Simulated link. URL: ${newTab.url.url}`)
-                await chrome.tabs.update(result.drivenTabId, {url: newTab.url, active: true});
-                await chrome.tabs.remove(tab.id);
-                console.log(`Removing tab ${tab.id}`)
-                }, 500); // Adjust delay time as needed
+                if (response.href) {
+                    console.log(`Normal link. URL: ${tab.url}`)
+                    await chrome.tabs.update(drivenTabId, {url: response.href, active: true});
+                    await chrome.tabs.remove(tab.id);
+                    console.log(`Removing tab ${tab.id}`)    
+                }
+                else {
+                    setTimeout(async function(){
+                    let tempTab = await chrome.tabs.get(tab.id)
+                    console.log(`Simulated link. URL: ${tempTab.url.url}`)
+                    await chrome.tabs.update(drivenTabId, {url: tempTab.url, active: true});
+                    await chrome.tabs.remove(tab.id);
+                    console.log(`Removing tab ${tab.id}`)
+                    }, 500); // Adjust delay time as needed
+                }
             }
         }
     }
